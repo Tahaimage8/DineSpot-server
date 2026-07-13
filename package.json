@@ -1,0 +1,27 @@
+{
+  "name": "dinespot-server-side",
+  "version": "1.0.0",
+  "description": "DineSpot REST API server",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon --watch index.ts --ext ts,json --exec tsx index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^17.0.0",
+    "express": "^5.0.0",
+    "mongodb": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.0",
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "nodemon": "^3.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
