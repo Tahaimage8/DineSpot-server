@@ -1834,6 +1834,841 @@ async function run() {
       },
     );
 
+
+    // =====================================================
+    // REVIEW AND RATING API
+    // =====================================================
+
+    const updateRestaurantRating = async (
+      restaurantId: ObjectId,
+    ) => {
+      const restaurantIdText =
+        restaurantId.toString();
+
+      const [ratingSummary] =
+        await reviewCollection
+          .aggregate<{
+            averageRating: number;
+            reviewCount: number;
+          }>([
+            {
+              $match: {
+                restaurantId:
+                  restaurantIdText,
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                averageRating: {
+                  $avg: "$rating",
+                },
+                reviewCount: {
+                  $sum: 1,
+                },
+              },
+            },
+          ])
+          .toArray();
+
+      const averageRating = ratingSummary
+        ? Number(
+            ratingSummary.averageRating.toFixed(
+              1,
+            ),
+          )
+        : 0;
+
+      const reviewCount =
+        ratingSummary?.reviewCount || 0;
+
+      await restaurantCollection.updateOne(
+        {
+          _id: restaurantId,
+        },
+        {
+          $set: {
+            averageRating,
+            reviewCount,
+            updatedAt: new Date(),
+          },
+        },
+      );
+
+      return {
+        averageRating,
+        reviewCount,
+      };
+    };
+
+    const getCustomerReviewFilter = (
+      user: AuthenticatedRequest["user"],
+    ) => ({
+      $or: [
+        {
+          customerId: String(
+            user?._id || "",
+          ),
+        },
+        {
+          customerEmail: String(
+            user?.email || "",
+          ),
+        },
+      ],
+    });
+
+    // Customer creates one review from one completed reservation
+    app.post(
+      "/api/reviews",
+      verifyToken,
+      verifyCustomer,
+      async (req, res) => {
+        try {
+          const user = getAuthUser(req);
+          const reviewData = req.body || {};
+
+          const reservationId = getObjectId(
+            String(
+              reviewData.reservationId ||
+                "",
+            ),
+          );
+
+          if (!reservationId) {
+            return res.status(400).json({
+              message:
+                "A valid reservation ID is required.",
+            });
+          }
+
+          const reservation =
+            await reservationCollection.findOne({
+              _id: reservationId,
+              status: "completed",
+              ...getCustomerReservationFilter(
+                user,
+              ),
+            });
+
+          if (!reservation) {
+            return res.status(403).json({
+              message:
+                "Only a completed reservation belonging to you can be reviewed.",
+            });
+          }
+
+          const restaurantId = getObjectId(
+            String(
+              reservation.restaurantId ||
+                "",
+            ),
+          );
+
+          if (!restaurantId) {
+            return res.status(400).json({
+              message:
+                "The reservation has an invalid restaurant ID.",
+            });
+          }
+
+          const restaurant =
+            await restaurantCollection.findOne({
+              _id: restaurantId,
+              status: "approved",
+            });
+
+          if (!restaurant) {
+            return res.status(404).json({
+              message:
+                "Approved restaurant was not found.",
+            });
+          }
+
+          const existingReview =
+            await reviewCollection.findOne({
+              reservationId:
+                reservationId.toString(),
+            });
+
+          if (existingReview) {
+            return res.status(409).json({
+              message:
+                "You already reviewed this reservation.",
+            });
+          }
+
+          const rating = Number(
+            reviewData.rating,
+          );
+
+          if (
+            !Number.isInteger(rating) ||
+            rating < 1 ||
+            rating > 5
+          ) {
+            return res.status(400).json({
+              message:
+                "Rating must be a whole number between 1 and 5.",
+            });
+          }
+
+          const comment = String(
+            reviewData.comment || "",
+          ).trim();
+
+          if (!comment) {
+            return res.status(400).json({
+              message:
+                "Review comment is required.",
+            });
+          }
+
+          if (comment.length > 1000) {
+            return res.status(400).json({
+              message:
+                "Review comment cannot exceed 1000 characters.",
+            });
+          }
+
+          const now = new Date();
+
+          const newReview = {
+            reservationId:
+              reservationId.toString(),
+
+            restaurantId:
+              restaurant._id.toString(),
+            restaurantName: String(
+              restaurant.name || "",
+            ),
+            restaurantImage: String(
+              restaurant.image || "",
+            ),
+
+            customerId: String(
+              user?._id || "",
+            ),
+            customerName: String(
+              user?.name || "",
+            ),
+            customerEmail: String(
+              user?.email || "",
+            ),
+
+            rating,
+            comment,
+
+            createdAt: now,
+            updatedAt: now,
+          };
+
+          const result =
+            await reviewCollection.insertOne(
+              newReview,
+            );
+
+          const ratingSummary =
+            await updateRestaurantRating(
+              restaurant._id,
+            );
+
+          res.status(201).json({
+            success: true,
+            message:
+              "Review submitted successfully.",
+            insertedId: result.insertedId,
+            review: {
+              ...newReview,
+              _id: result.insertedId,
+            },
+            ratingSummary,
+          });
+        } catch (error) {
+          console.error(
+            "Review create error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to submit review.",
+          });
+        }
+      },
+    );
+
+    // Public reviews for one approved restaurant
+    app.get(
+      "/api/restaurants/:id/reviews",
+      async (req, res) => {
+        try {
+          const restaurantId = getObjectId(
+            req.params.id,
+          );
+
+          if (!restaurantId) {
+            return res.status(400).json({
+              message:
+                "Invalid restaurant ID.",
+            });
+          }
+
+          const restaurant =
+            await restaurantCollection.findOne({
+              _id: restaurantId,
+              status: "approved",
+            });
+
+          if (!restaurant) {
+            return res.status(404).json({
+              message:
+                "Restaurant was not found.",
+            });
+          }
+
+          const reviews =
+            await reviewCollection
+              .find({
+                restaurantId:
+                  restaurantId.toString(),
+              })
+              .sort({
+                createdAt: -1,
+              })
+              .toArray();
+
+          res.json({
+            reviews,
+            summary: {
+              averageRating: Number(
+                restaurant.averageRating || 0,
+              ),
+              reviewCount: Number(
+                restaurant.reviewCount || 0,
+              ),
+            },
+          });
+        } catch (error) {
+          console.error(
+            "Restaurant reviews fetch error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to fetch restaurant reviews.",
+          });
+        }
+      },
+    );
+
+    // Customer gets their own reviews
+    app.get(
+      "/api/my/reviews",
+      verifyToken,
+      verifyCustomer,
+      async (req, res) => {
+        try {
+          const user = getAuthUser(req);
+
+          const reviews =
+            await reviewCollection
+              .find(
+                getCustomerReviewFilter(
+                  user,
+                ),
+              )
+              .sort({
+                createdAt: -1,
+              })
+              .toArray();
+
+          res.json(reviews);
+        } catch (error) {
+          console.error(
+            "Customer reviews fetch error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to fetch your reviews.",
+          });
+        }
+      },
+    );
+
+    // Customer updates their own review
+    app.patch(
+      "/api/reviews/:id",
+      verifyToken,
+      verifyCustomer,
+      async (req, res) => {
+        try {
+          const reviewId = getObjectId(
+            req.params.id,
+          );
+
+          if (!reviewId) {
+            return res.status(400).json({
+              message:
+                "Invalid review ID.",
+            });
+          }
+
+          const user = getAuthUser(req);
+
+          const review =
+            await reviewCollection.findOne({
+              _id: reviewId,
+              ...getCustomerReviewFilter(
+                user,
+              ),
+            });
+
+          if (!review) {
+            return res.status(404).json({
+              message:
+                "Review was not found or you cannot update it.",
+            });
+          }
+
+          const updateData: Record<
+            string,
+            unknown
+          > = {};
+
+          if (
+            req.body?.rating !== undefined
+          ) {
+            const rating = Number(
+              req.body.rating,
+            );
+
+            if (
+              !Number.isInteger(rating) ||
+              rating < 1 ||
+              rating > 5
+            ) {
+              return res.status(400).json({
+                message:
+                  "Rating must be a whole number between 1 and 5.",
+              });
+            }
+
+            updateData.rating = rating;
+          }
+
+          if (
+            req.body?.comment !== undefined
+          ) {
+            const comment = String(
+              req.body.comment,
+            ).trim();
+
+            if (!comment) {
+              return res.status(400).json({
+                message:
+                  "Review comment cannot be empty.",
+              });
+            }
+
+            if (comment.length > 1000) {
+              return res.status(400).json({
+                message:
+                  "Review comment cannot exceed 1000 characters.",
+              });
+            }
+
+            updateData.comment = comment;
+          }
+
+          if (
+            Object.keys(updateData).length ===
+            0
+          ) {
+            return res.status(400).json({
+              message:
+                "No review information was provided.",
+            });
+          }
+
+          updateData.updatedAt =
+            new Date();
+
+          await reviewCollection.updateOne(
+            {
+              _id: reviewId,
+              ...getCustomerReviewFilter(
+                user,
+              ),
+            },
+            {
+              $set: updateData,
+            },
+          );
+
+          const updatedReview =
+            await reviewCollection.findOne({
+              _id: reviewId,
+            });
+
+          const restaurantId =
+            getObjectId(
+              String(
+                review.restaurantId || "",
+              ),
+            );
+
+          const ratingSummary =
+            restaurantId
+              ? await updateRestaurantRating(
+                  restaurantId,
+                )
+              : null;
+
+          res.json({
+            success: true,
+            message:
+              "Review updated successfully.",
+            review: updatedReview,
+            ratingSummary,
+          });
+        } catch (error) {
+          console.error(
+            "Review update error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to update review.",
+          });
+        }
+      },
+    );
+
+    // Customer deletes their own review
+    app.delete(
+      "/api/reviews/:id",
+      verifyToken,
+      verifyCustomer,
+      async (req, res) => {
+        try {
+          const reviewId = getObjectId(
+            req.params.id,
+          );
+
+          if (!reviewId) {
+            return res.status(400).json({
+              message:
+                "Invalid review ID.",
+            });
+          }
+
+          const user = getAuthUser(req);
+
+          const review =
+            await reviewCollection.findOne({
+              _id: reviewId,
+              ...getCustomerReviewFilter(
+                user,
+              ),
+            });
+
+          if (!review) {
+            return res.status(404).json({
+              message:
+                "Review was not found or you cannot delete it.",
+            });
+          }
+
+          await reviewCollection.deleteOne({
+            _id: reviewId,
+            ...getCustomerReviewFilter(
+              user,
+            ),
+          });
+
+          const restaurantId =
+            getObjectId(
+              String(
+                review.restaurantId || "",
+              ),
+            );
+
+          const ratingSummary =
+            restaurantId
+              ? await updateRestaurantRating(
+                  restaurantId,
+                )
+              : null;
+
+          res.json({
+            success: true,
+            message:
+              "Review deleted successfully.",
+            ratingSummary,
+          });
+        } catch (error) {
+          console.error(
+            "Review delete error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to delete review.",
+          });
+        }
+      },
+    );
+
+    // Restaurant owner gets reviews for their restaurant
+    app.get(
+      "/api/owner/reviews",
+      verifyToken,
+      verifyRestaurantOwner,
+      async (req, res) => {
+        try {
+          const user = getAuthUser(req);
+
+          const restaurant =
+            await restaurantCollection.findOne(
+              getOwnerFilter(user),
+            );
+
+          if (!restaurant) {
+            return res.json({
+              reviews: [],
+              summary: {
+                averageRating: 0,
+                reviewCount: 0,
+              },
+            });
+          }
+
+          const search = String(
+            req.query.search || "",
+          ).trim();
+
+          const query: Record<
+            string,
+            unknown
+          > = {
+            restaurantId:
+              restaurant._id.toString(),
+          };
+
+          if (search) {
+            const safeSearch =
+              search.replace(
+                /[.*+?^${}()|[\]\\]/g,
+                "\\$&",
+              );
+
+            const searchRegex =
+              new RegExp(safeSearch, "i");
+
+            query.$or = [
+              {
+                customerName:
+                  searchRegex,
+              },
+              {
+                customerEmail:
+                  searchRegex,
+              },
+              {
+                comment: searchRegex,
+              },
+            ];
+          }
+
+          const reviews =
+            await reviewCollection
+              .find(query)
+              .sort({
+                createdAt: -1,
+              })
+              .toArray();
+
+          res.json({
+            reviews,
+            summary: {
+              averageRating: Number(
+                restaurant.averageRating || 0,
+              ),
+              reviewCount: Number(
+                restaurant.reviewCount || 0,
+              ),
+            },
+          });
+        } catch (error) {
+          console.error(
+            "Owner reviews fetch error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to fetch restaurant reviews.",
+          });
+        }
+      },
+    );
+
+    // Admin gets all reviews
+    app.get(
+      "/api/admin/reviews",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const search = String(
+            req.query.search || "",
+          ).trim();
+
+          const requestedRating =
+            Number(req.query.rating);
+
+          const query: Record<
+            string,
+            unknown
+          > = {};
+
+          if (
+            Number.isInteger(
+              requestedRating,
+            ) &&
+            requestedRating >= 1 &&
+            requestedRating <= 5
+          ) {
+            query.rating =
+              requestedRating;
+          }
+
+          if (search) {
+            const safeSearch =
+              search.replace(
+                /[.*+?^${}()|[\]\\]/g,
+                "\\$&",
+              );
+
+            const searchRegex =
+              new RegExp(safeSearch, "i");
+
+            query.$or = [
+              {
+                restaurantName:
+                  searchRegex,
+              },
+              {
+                customerName:
+                  searchRegex,
+              },
+              {
+                customerEmail:
+                  searchRegex,
+              },
+              {
+                comment: searchRegex,
+              },
+            ];
+          }
+
+          const reviews =
+            await reviewCollection
+              .find(query)
+              .sort({
+                createdAt: -1,
+              })
+              .toArray();
+
+          res.json(reviews);
+        } catch (error) {
+          console.error(
+            "Admin reviews fetch error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to fetch reviews.",
+          });
+        }
+      },
+    );
+
+    // Admin deletes any review
+    app.delete(
+      "/api/admin/reviews/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const reviewId = getObjectId(
+            req.params.id,
+          );
+
+          if (!reviewId) {
+            return res.status(400).json({
+              message:
+                "Invalid review ID.",
+            });
+          }
+
+          const review =
+            await reviewCollection.findOne({
+              _id: reviewId,
+            });
+
+          if (!review) {
+            return res.status(404).json({
+              message:
+                "Review was not found.",
+            });
+          }
+
+          await reviewCollection.deleteOne({
+            _id: reviewId,
+          });
+
+          const restaurantId =
+            getObjectId(
+              String(
+                review.restaurantId || "",
+              ),
+            );
+
+          const ratingSummary =
+            restaurantId
+              ? await updateRestaurantRating(
+                  restaurantId,
+                )
+              : null;
+
+          res.json({
+            success: true,
+            message:
+              "Review deleted successfully.",
+            ratingSummary,
+          });
+        } catch (error) {
+          console.error(
+            "Admin review delete error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to delete review.",
+          });
+        }
+      },
+    );
+
     // await client
     //   .db("admin")
     //   .command({ ping: 1 });
@@ -1842,7 +2677,6 @@ async function run() {
       "DineSpot database setup is ready!",
     );
 
-    void reviewCollection;
   } finally {
     // await client.close();
   }
