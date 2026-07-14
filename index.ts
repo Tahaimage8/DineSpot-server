@@ -88,6 +88,8 @@ async function run() {
 
 
     // VERIFICATION RELATED
+
+
     const findUserById = async (
       userId: unknown,
     ) => {
@@ -253,115 +255,136 @@ async function run() {
       next();
     };
 
-
+ 
     // RESTAURANT API
 
 
-    // Restaurant owner creates a restaurant
-  app.post("/api/restaurants",verifyToken, verifyRestaurantOwner,async (req, res) => {
-    try {
-      const authenticatedRequest =
-        req as AuthenticatedRequest;
+    // Restaurant owner creates only one restaurant
+    app.post(
+      "/api/restaurants",verifyToken,verifyRestaurantOwner,async (req, res) => {
+        try {
+          const authenticatedRequest =
+            req as AuthenticatedRequest;
 
-      const user = authenticatedRequest.user;
-      const restaurantData = req.body || {};
+          const user =
+            authenticatedRequest.user;
 
-      const ownerId = String(user?._id || "");
-      const ownerEmail = String(user?.email || "");
+          const restaurantData =
+            req.body || {};
 
-      // Check whether this owner already has a restaurant
-      const existingRestaurant =
-        await restaurantCollection.findOne({
-          $or: [
-            {
-              ownerId,
+          const ownerId = String(
+            user?._id || "",
+          );
+
+          const ownerEmail = String(
+            user?.email || "",
+          );
+
+          const existingRestaurant =
+            await restaurantCollection.findOne({
+              $or: [
+                {
+                  ownerId,
+                },
+                {
+                  ownerEmail,
+                },
+              ],
+            });
+
+          if (existingRestaurant) {
+            return res.status(409).json({
+              message:
+                "You already have a restaurant. One owner can create only one restaurant.",
+            });
+          }
+
+          if (
+            !String(
+              restaurantData.name || "",
+            ).trim()
+          ) {
+            return res.status(400).json({
+              message:
+                "Restaurant name is required.",
+            });
+          }
+
+          if (
+            !String(
+              restaurantData.cuisine || "",
+            ).trim()
+          ) {
+            return res.status(400).json({
+              message: "Cuisine is required.",
+            });
+          }
+
+          if (
+            !String(
+              restaurantData.location || "",
+            ).trim()
+          ) {
+            return res.status(400).json({
+              message:
+                "Restaurant location is required.",
+            });
+          }
+
+          const newRestaurant = {
+            ...restaurantData,
+
+            name: String(
+              restaurantData.name,
+            ).trim(),
+
+            cuisine: String(
+              restaurantData.cuisine,
+            ).trim(),
+
+            location: String(
+              restaurantData.location,
+            ).trim(),
+
+            ownerId,
+            ownerEmail,
+
+            status: "pending",
+
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+
+          const result =
+            await restaurantCollection.insertOne(
+              newRestaurant,
+            );
+
+          res.status(201).json({
+            success: true,
+            message:
+              "Restaurant submitted successfully.",
+
+            insertedId: result.insertedId,
+
+            restaurant: {
+              ...newRestaurant,
+              _id: result.insertedId,
             },
-            {
-              ownerEmail,
-            },
-          ],
-        });
+          });
+        } catch (error) {
+          console.error(
+            "Restaurant create error:",
+            error,
+          );
 
-      if (existingRestaurant) {
-        return res.status(409).json({
-          message:
-            "You already have a restaurant. One owner can create only one restaurant.",
-        });
-      }
-
-      if (!restaurantData.name) {
-        return res.status(400).json({
-          message: "Restaurant name is required.",
-        });
-      }
-
-      if (!restaurantData.cuisine) {
-        return res.status(400).json({
-          message: "Cuisine is required.",
-        });
-      }
-
-      if (!restaurantData.location) {
-        return res.status(400).json({
-          message:
-            "Restaurant location is required.",
-        });
-      }
-
-      const newRestaurant = {
-        ...restaurantData,
-
-        name: String(
-          restaurantData.name,
-        ).trim(),
-
-        cuisine: String(
-          restaurantData.cuisine,
-        ).trim(),
-
-        location: String(
-          restaurantData.location,
-        ).trim(),
-
-        ownerId,
-        ownerEmail,
-
-        status: "pending",
-
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-
-      const result =
-        await restaurantCollection.insertOne(
-          newRestaurant,
-        );
-
-      res.status(201).json({
-        success: true,
-        message:
-          "Restaurant submitted successfully.",
-
-        insertedId: result.insertedId,
-
-        restaurant: {
-          ...newRestaurant,
-          _id: result.insertedId,
-        },
-      });
-    } catch (error) {
-      console.error(
-        "Restaurant create error:",
-        error,
-      );
-
-      res.status(500).json({
-        message:
-          "Failed to create restaurant.",
-      });
-    }
-  },
-);
+          res.status(500).json({
+            message:
+              "Failed to create restaurant.",
+          });
+        }
+      },
+    );
 
     // Public approved restaurant list
     app.get("/api/restaurants",async (_req, res) => {
@@ -391,7 +414,376 @@ async function run() {
       },
     );
 
+    // Restaurant owner gets their own restaurant
+    app.get("/api/my/restaurants",verifyToken,verifyRestaurantOwner,async (req, res) => {
+        try {
+          const authenticatedRequest =
+            req as AuthenticatedRequest;
 
+          const user =
+            authenticatedRequest.user;
+
+          const ownerId = String(
+            user?._id || "",
+          );
+
+          const ownerEmail = String(
+            user?.email || "",
+          );
+
+          const restaurants =
+            await restaurantCollection
+              .find({
+                $or: [
+                  {
+                    ownerId,
+                  },
+                  {
+                    ownerEmail,
+                  },
+                ],
+              })
+              .sort({
+                createdAt: -1,
+              })
+              .toArray();
+
+          res.json(restaurants);
+        } catch (error) {
+          console.error(
+            "Owner restaurant fetch error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to fetch your restaurant.",
+          });
+        }
+      },
+    );
+
+    // Public single approved restaurant details
+    app.get("/api/restaurants/:id",async (req, res) => {
+        try {
+          const rawId = req.params.id;
+
+          if (Array.isArray(rawId)) {
+            return res.status(400).json({
+              message:
+                "Invalid restaurant ID.",
+            });
+          }
+
+          const id = rawId;
+
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).json({
+              message:
+                "Invalid restaurant ID.",
+            });
+          }
+
+          const restaurant =
+            await restaurantCollection.findOne({
+              _id: new ObjectId(String(id)),
+              status: "approved",
+            });
+
+          if (!restaurant) {
+            return res.status(404).json({
+              message:
+                "Restaurant was not found.",
+            });
+          }
+
+          res.json(restaurant);
+        } catch (error) {
+          console.error(
+            "Restaurant details fetch error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to fetch restaurant details.",
+          });
+        }
+      },
+    );
+
+    // Restaurant owner updates their own restaurant
+    app.patch("/api/restaurants/:id",verifyToken,verifyRestaurantOwner,async (req, res) => {
+        try {
+          const authenticatedRequest =
+            req as AuthenticatedRequest;
+
+          const user =
+            authenticatedRequest.user;
+
+          const rawId = req.params.id;
+          const restaurantData =
+            req.body || {};
+
+          if (Array.isArray(rawId)) {
+            return res.status(400).json({
+              message:
+                "Invalid restaurant ID.",
+            });
+          }
+
+          const id = rawId;
+
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).json({
+              message:
+                "Invalid restaurant ID.",
+            });
+          }
+
+          const ownerId = String(
+            user?._id || "",
+          );
+
+          const ownerEmail = String(
+            user?.email || "",
+          );
+
+          const existingRestaurant =
+            await restaurantCollection.findOne({
+              _id: new ObjectId(id),
+
+              $or: [
+                {
+                  ownerId,
+                },
+                {
+                  ownerEmail,
+                },
+              ],
+            });
+
+          if (!existingRestaurant) {
+            return res.status(404).json({
+              message:
+                "Restaurant was not found or you do not have permission to update it.",
+            });
+          }
+
+          if (
+            restaurantData.name !==
+              undefined &&
+            !String(
+              restaurantData.name,
+            ).trim()
+          ) {
+            return res.status(400).json({
+              message:
+                "Restaurant name cannot be empty.",
+            });
+          }
+
+          if (
+            restaurantData.cuisine !==
+              undefined &&
+            !String(
+              restaurantData.cuisine,
+            ).trim()
+          ) {
+            return res.status(400).json({
+              message:
+                "Cuisine cannot be empty.",
+            });
+          }
+
+          if (
+            restaurantData.location !==
+              undefined &&
+            !String(
+              restaurantData.location,
+            ).trim()
+          ) {
+            return res.status(400).json({
+              message:
+                "Restaurant location cannot be empty.",
+            });
+          }
+
+          const updatedRestaurantData = {
+            ...restaurantData,
+          };
+
+          delete updatedRestaurantData._id;
+          delete updatedRestaurantData.ownerId;
+          delete updatedRestaurantData.ownerEmail;
+          delete updatedRestaurantData.status;
+          delete updatedRestaurantData.createdAt;
+          delete updatedRestaurantData.approvedAt;
+          delete updatedRestaurantData.approvedBy;
+          delete updatedRestaurantData.averageRating;
+          delete updatedRestaurantData.reviewCount;
+
+          if (
+            updatedRestaurantData.name !==
+            undefined
+          ) {
+            updatedRestaurantData.name =
+              String(
+                updatedRestaurantData.name,
+              ).trim();
+          }
+
+          if (
+            updatedRestaurantData.cuisine !==
+            undefined
+          ) {
+            updatedRestaurantData.cuisine =
+              String(
+                updatedRestaurantData.cuisine,
+              ).trim();
+          }
+
+          if (
+            updatedRestaurantData.location !==
+            undefined
+          ) {
+            updatedRestaurantData.location =
+              String(
+                updatedRestaurantData.location,
+              ).trim();
+          }
+
+          if (
+            Object.keys(
+              updatedRestaurantData,
+            ).length === 0
+          ) {
+            return res.status(400).json({
+              message:
+                "No restaurant information was provided.",
+            });
+          }
+
+          updatedRestaurantData.updatedAt =
+            new Date();
+
+          await restaurantCollection.updateOne(
+            {
+              _id: new ObjectId(String(id)),
+
+              $or: [
+                {
+                  ownerId,
+                },
+                {
+                  ownerEmail,
+                },
+              ],
+            },
+            {
+              $set: updatedRestaurantData,
+            },
+          );
+
+          const updatedRestaurant =
+            await restaurantCollection.findOne({
+              _id: new ObjectId(String(id)),
+            });
+
+          res.json({
+            success: true,
+            message:
+              "Restaurant updated successfully.",
+            restaurant: updatedRestaurant,
+          });
+        } catch (error) {
+          console.error(
+            "Restaurant update error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to update restaurant.",
+          });
+        }
+      },
+    );
+
+    // Restaurant owner deletes their own restaurant
+    app.delete("/api/restaurants/:id",verifyToken,verifyRestaurantOwner,async (req, res) => {
+        try {
+          const authenticatedRequest =
+            req as AuthenticatedRequest;
+
+          const user =
+            authenticatedRequest.user;
+
+          const rawId = req.params.id;
+
+          if (Array.isArray(rawId)) {
+            return res.status(400).json({
+              message:
+                "Invalid restaurant ID.",
+            });
+          }
+
+          const id = rawId;
+
+          if (!ObjectId.isValid(id)) {
+            return res.status(400).json({
+              message:
+                "Invalid restaurant ID.",
+            });
+          }
+
+          const ownerId = String(
+            user?._id || "",
+          );
+
+          const ownerEmail = String(
+            user?.email || "",
+          );
+
+          const result =
+            await restaurantCollection.deleteOne({
+              _id: new ObjectId(String(id)),
+
+              $or: [
+                {
+                  ownerId,
+                },
+                {
+                  ownerEmail,
+                },
+              ],
+            });
+
+          if (!result.deletedCount) {
+            return res.status(404).json({
+              message:
+                "Restaurant was not found or you do not have permission to delete it.",
+            });
+          }
+
+          res.json({
+            success: true,
+            message:
+              "Restaurant deleted successfully.",
+          });
+        } catch (error) {
+          console.error(
+            "Restaurant delete error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to delete restaurant.",
+          });
+        }
+      },
+    );
 
     // await client
     //   .db("admin")
