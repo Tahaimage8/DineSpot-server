@@ -86,9 +86,46 @@ async function run() {
     const sessionCollection =
       database.collection("session");
 
+    // =====================================================
+    // HELPER FUNCTIONS
+    // =====================================================
 
+    const getAuthUser = (req: Request) => {
+      const authRequest =
+        req as AuthenticatedRequest;
+
+      return authRequest.user;
+    };
+
+    const getOwnerFilter = (
+      user: AuthenticatedRequest["user"],
+    ) => ({
+      $or: [
+        {
+          ownerId: String(user?._id || ""),
+        },
+        {
+          ownerEmail: String(user?.email || ""),
+        },
+      ],
+    });
+
+    const getObjectId = (
+      value: string | string[],
+    ) => {
+      if (
+        Array.isArray(value) ||
+        !ObjectId.isValid(value)
+      ) {
+        return null;
+      }
+
+      return new ObjectId(value);
+    };
+
+    // =====================================================
     // VERIFICATION RELATED
-
+    // =====================================================
 
     const findUserById = async (
       userId: unknown,
@@ -191,13 +228,9 @@ async function run() {
       res: Response,
       next: NextFunction,
     ) => {
-      const authenticatedRequest =
-        req as AuthenticatedRequest;
+      const user = getAuthUser(req);
 
-      if (
-        authenticatedRequest.user?.role !==
-        "admin"
-      ) {
+      if (user?.role !== "admin") {
         return res.status(403).json({
           message: "Admin access required.",
         });
@@ -211,11 +244,7 @@ async function run() {
       res: Response,
       next: NextFunction,
     ) => {
-      const authenticatedRequest =
-        req as AuthenticatedRequest;
-
-      const user =
-        authenticatedRequest.user;
+      const user = getAuthUser(req);
 
       if (
         user?.role !== "user" ||
@@ -235,11 +264,7 @@ async function run() {
       res: Response,
       next: NextFunction,
     ) => {
-      const authenticatedRequest =
-        req as AuthenticatedRequest;
-
-      const user =
-        authenticatedRequest.user;
+      const user = getAuthUser(req);
 
       if (
         user?.role !== "user" ||
@@ -255,42 +280,28 @@ async function run() {
       next();
     };
 
- 
-    // RESTAURANT API
-
+    // =====================================================
+    // RESTAURANT OWNER API
+    // =====================================================
 
     // Restaurant owner creates only one restaurant
     app.post(
-      "/api/restaurants",verifyToken,verifyRestaurantOwner,async (req, res) => {
+      "/api/restaurants",
+      verifyToken,
+      verifyRestaurantOwner,
+      async (req, res) => {
         try {
-          const authenticatedRequest =
-            req as AuthenticatedRequest;
-
-          const user =
-            authenticatedRequest.user;
-
+          const user = getAuthUser(req);
           const restaurantData =
             req.body || {};
 
-          const ownerId = String(
-            user?._id || "",
-          );
-
-          const ownerEmail = String(
-            user?.email || "",
-          );
+          const ownerFilter =
+            getOwnerFilter(user);
 
           const existingRestaurant =
-            await restaurantCollection.findOne({
-              $or: [
-                {
-                  ownerId,
-                },
-                {
-                  ownerEmail,
-                },
-              ],
-            });
+            await restaurantCollection.findOne(
+              ownerFilter,
+            );
 
           if (existingRestaurant) {
             return res.status(409).json({
@@ -299,32 +310,32 @@ async function run() {
             });
           }
 
-          if (
-            !String(
-              restaurantData.name || "",
-            ).trim()
-          ) {
+          const name = String(
+            restaurantData.name || "",
+          ).trim();
+
+          const cuisine = String(
+            restaurantData.cuisine || "",
+          ).trim();
+
+          const location = String(
+            restaurantData.location || "",
+          ).trim();
+
+          if (!name) {
             return res.status(400).json({
               message:
                 "Restaurant name is required.",
             });
           }
 
-          if (
-            !String(
-              restaurantData.cuisine || "",
-            ).trim()
-          ) {
+          if (!cuisine) {
             return res.status(400).json({
               message: "Cuisine is required.",
             });
           }
 
-          if (
-            !String(
-              restaurantData.location || "",
-            ).trim()
-          ) {
+          if (!location) {
             return res.status(400).json({
               message:
                 "Restaurant location is required.",
@@ -333,24 +344,14 @@ async function run() {
 
           const newRestaurant = {
             ...restaurantData,
-
-            name: String(
-              restaurantData.name,
-            ).trim(),
-
-            cuisine: String(
-              restaurantData.cuisine,
-            ).trim(),
-
-            location: String(
-              restaurantData.location,
-            ).trim(),
-
-            ownerId,
-            ownerEmail,
-
+            name,
+            cuisine,
+            location,
+            ownerId: String(user?._id || ""),
+            ownerEmail: String(
+              user?.email || "",
+            ),
             status: "pending",
-
             createdAt: new Date(),
             updatedAt: new Date(),
           };
@@ -364,9 +365,7 @@ async function run() {
             success: true,
             message:
               "Restaurant submitted successfully.",
-
             insertedId: result.insertedId,
-
             restaurant: {
               ...newRestaurant,
               _id: result.insertedId,
@@ -386,63 +385,18 @@ async function run() {
       },
     );
 
-    // Public approved restaurant list
-    app.get("/api/restaurants",async (_req, res) => {
+    // Restaurant owner gets their restaurant
+    app.get(
+      "/api/my/restaurants",
+      verifyToken,
+      verifyRestaurantOwner,
+      async (req, res) => {
         try {
-          const restaurants =
-            await restaurantCollection
-              .find({
-                status: "approved",
-              })
-              .sort({
-                createdAt: -1,
-              })
-              .toArray();
-
-          res.json(restaurants);
-        } catch (error) {
-          console.error(
-            "Restaurants fetch error:",
-            error,
-          );
-
-          res.status(500).json({
-            message:
-              "Failed to fetch restaurants.",
-          });
-        }
-      },
-    );
-
-    // Restaurant owner gets their own restaurant
-    app.get("/api/my/restaurants",verifyToken,verifyRestaurantOwner,async (req, res) => {
-        try {
-          const authenticatedRequest =
-            req as AuthenticatedRequest;
-
-          const user =
-            authenticatedRequest.user;
-
-          const ownerId = String(
-            user?._id || "",
-          );
-
-          const ownerEmail = String(
-            user?.email || "",
-          );
+          const user = getAuthUser(req);
 
           const restaurants =
             await restaurantCollection
-              .find({
-                $or: [
-                  {
-                    ownerId,
-                  },
-                  {
-                    ownerEmail,
-                  },
-                ],
-              })
+              .find(getOwnerFilter(user))
               .sort({
                 createdAt: -1,
               })
@@ -463,112 +417,43 @@ async function run() {
       },
     );
 
-    // Public single approved restaurant details
-    app.get("/api/restaurants/:id",async (req, res) => {
+    // Restaurant owner updates their restaurant
+    app.patch(
+      "/api/restaurants/:id",
+      verifyToken,
+      verifyRestaurantOwner,
+      async (req, res) => {
         try {
-          const rawId = req.params.id;
-
-          if (Array.isArray(rawId)) {
-            return res.status(400).json({
-              message:
-                "Invalid restaurant ID.",
-            });
-          }
-
-          const id = rawId;
-
-          if (!ObjectId.isValid(id)) {
-            return res.status(400).json({
-              message:
-                "Invalid restaurant ID.",
-            });
-          }
-
-          const restaurant =
-            await restaurantCollection.findOne({
-              _id: new ObjectId(String(id)),
-              status: "approved",
-            });
-
-          if (!restaurant) {
-            return res.status(404).json({
-              message:
-                "Restaurant was not found.",
-            });
-          }
-
-          res.json(restaurant);
-        } catch (error) {
-          console.error(
-            "Restaurant details fetch error:",
-            error,
+          const restaurantId = getObjectId(
+            req.params.id,
           );
 
-          res.status(500).json({
-            message:
-              "Failed to fetch restaurant details.",
-          });
-        }
-      },
-    );
-
-    // Restaurant owner updates their own restaurant
-    app.patch("/api/restaurants/:id",verifyToken,verifyRestaurantOwner,async (req, res) => {
-        try {
-          const authenticatedRequest =
-            req as AuthenticatedRequest;
-
-          const user =
-            authenticatedRequest.user;
-
-          const rawId = req.params.id;
-          const restaurantData =
-            req.body || {};
-
-          if (Array.isArray(rawId)) {
+          if (!restaurantId) {
             return res.status(400).json({
               message:
                 "Invalid restaurant ID.",
             });
           }
 
-          const id = rawId;
-
-          if (!ObjectId.isValid(id)) {
-            return res.status(400).json({
-              message:
-                "Invalid restaurant ID.",
-            });
-          }
-
-          const ownerId = String(
-            user?._id || "",
-          );
-
-          const ownerEmail = String(
-            user?.email || "",
-          );
+          const user = getAuthUser(req);
+          const ownerFilter =
+            getOwnerFilter(user);
 
           const existingRestaurant =
             await restaurantCollection.findOne({
-              _id: new ObjectId(id),
-
-              $or: [
-                {
-                  ownerId,
-                },
-                {
-                  ownerEmail,
-                },
-              ],
+              _id: restaurantId,
+              ...ownerFilter,
             });
 
           if (!existingRestaurant) {
             return res.status(404).json({
               message:
-                "Restaurant was not found or you do not have permission to update it.",
+                "Restaurant was not found or you cannot update it.",
             });
           }
+
+          const restaurantData =
+            req.body || {};
 
           if (
             restaurantData.name !==
@@ -609,54 +494,49 @@ async function run() {
             });
           }
 
-          const updatedRestaurantData = {
+          const updateData: Record<
+            string,
+            unknown
+          > = {
             ...restaurantData,
           };
 
-          delete updatedRestaurantData._id;
-          delete updatedRestaurantData.ownerId;
-          delete updatedRestaurantData.ownerEmail;
-          delete updatedRestaurantData.status;
-          delete updatedRestaurantData.createdAt;
-          delete updatedRestaurantData.approvedAt;
-          delete updatedRestaurantData.approvedBy;
-          delete updatedRestaurantData.averageRating;
-          delete updatedRestaurantData.reviewCount;
+          delete updateData._id;
+          delete updateData.ownerId;
+          delete updateData.ownerEmail;
+          delete updateData.status;
+          delete updateData.createdAt;
+          delete updateData.approvedAt;
+          delete updateData.approvedBy;
+          delete updateData.rejectedAt;
+          delete updateData.rejectedBy;
+          delete updateData.averageRating;
+          delete updateData.reviewCount;
 
-          if (
-            updatedRestaurantData.name !==
-            undefined
-          ) {
-            updatedRestaurantData.name =
-              String(
-                updatedRestaurantData.name,
-              ).trim();
+          if (updateData.name !== undefined) {
+            updateData.name = String(
+              updateData.name,
+            ).trim();
           }
 
           if (
-            updatedRestaurantData.cuisine !==
-            undefined
+            updateData.cuisine !== undefined
           ) {
-            updatedRestaurantData.cuisine =
-              String(
-                updatedRestaurantData.cuisine,
-              ).trim();
+            updateData.cuisine = String(
+              updateData.cuisine,
+            ).trim();
           }
 
           if (
-            updatedRestaurantData.location !==
-            undefined
+            updateData.location !== undefined
           ) {
-            updatedRestaurantData.location =
-              String(
-                updatedRestaurantData.location,
-              ).trim();
+            updateData.location = String(
+              updateData.location,
+            ).trim();
           }
 
           if (
-            Object.keys(
-              updatedRestaurantData,
-            ).length === 0
+            Object.keys(updateData).length === 0
           ) {
             return res.status(400).json({
               message:
@@ -664,30 +544,21 @@ async function run() {
             });
           }
 
-          updatedRestaurantData.updatedAt =
-            new Date();
+          updateData.updatedAt = new Date();
 
           await restaurantCollection.updateOne(
             {
-              _id: new ObjectId(String(id)),
-
-              $or: [
-                {
-                  ownerId,
-                },
-                {
-                  ownerEmail,
-                },
-              ],
+              _id: restaurantId,
+              ...ownerFilter,
             },
             {
-              $set: updatedRestaurantData,
+              $set: updateData,
             },
           );
 
           const updatedRestaurant =
             await restaurantCollection.findOne({
-              _id: new ObjectId(String(id)),
+              _id: restaurantId,
             });
 
           res.json({
@@ -710,59 +581,36 @@ async function run() {
       },
     );
 
-    // Restaurant owner deletes their own restaurant
-    app.delete("/api/restaurants/:id",verifyToken,verifyRestaurantOwner,async (req, res) => {
+    // Restaurant owner deletes their restaurant
+    app.delete(
+      "/api/restaurants/:id",
+      verifyToken,
+      verifyRestaurantOwner,
+      async (req, res) => {
         try {
-          const authenticatedRequest =
-            req as AuthenticatedRequest;
+          const restaurantId = getObjectId(
+            req.params.id,
+          );
 
-          const user =
-            authenticatedRequest.user;
-
-          const rawId = req.params.id;
-
-          if (Array.isArray(rawId)) {
+          if (!restaurantId) {
             return res.status(400).json({
               message:
                 "Invalid restaurant ID.",
             });
           }
 
-          const id = rawId;
-
-          if (!ObjectId.isValid(id)) {
-            return res.status(400).json({
-              message:
-                "Invalid restaurant ID.",
-            });
-          }
-
-          const ownerId = String(
-            user?._id || "",
-          );
-
-          const ownerEmail = String(
-            user?.email || "",
-          );
+          const user = getAuthUser(req);
 
           const result =
             await restaurantCollection.deleteOne({
-              _id: new ObjectId(String(id)),
-
-              $or: [
-                {
-                  ownerId,
-                },
-                {
-                  ownerEmail,
-                },
-              ],
+              _id: restaurantId,
+              ...getOwnerFilter(user),
             });
 
           if (!result.deletedCount) {
             return res.status(404).json({
               message:
-                "Restaurant was not found or you do not have permission to delete it.",
+                "Restaurant was not found or you cannot delete it.",
             });
           }
 
@@ -785,6 +633,339 @@ async function run() {
       },
     );
 
+    // =====================================================
+    // PUBLIC RESTAURANT API
+    // =====================================================
+
+    // Public approved restaurant list
+    app.get(
+      "/api/restaurants",
+      async (_req, res) => {
+        try {
+          const restaurants =
+            await restaurantCollection
+              .find({
+                status: "approved",
+              })
+              .sort({
+                createdAt: -1,
+              })
+              .toArray();
+
+          res.json(restaurants);
+        } catch (error) {
+          console.error(
+            "Restaurants fetch error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to fetch restaurants.",
+          });
+        }
+      },
+    );
+
+    // Public approved restaurant details
+    app.get(
+      "/api/restaurants/:id",
+      async (req, res) => {
+        try {
+          const restaurantId = getObjectId(
+            req.params.id,
+          );
+
+          if (!restaurantId) {
+            return res.status(400).json({
+              message:
+                "Invalid restaurant ID.",
+            });
+          }
+
+          const restaurant =
+            await restaurantCollection.findOne({
+              _id: restaurantId,
+              status: "approved",
+            });
+
+          if (!restaurant) {
+            return res.status(404).json({
+              message:
+                "Restaurant was not found.",
+            });
+          }
+
+          res.json(restaurant);
+        } catch (error) {
+          console.error(
+            "Restaurant details fetch error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to fetch restaurant details.",
+          });
+        }
+      },
+    );
+
+    // =====================================================
+    // ADMIN RESTAURANT API
+    // =====================================================
+
+    // Admin gets all restaurants
+    app.get(
+      "/api/admin/restaurants",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const status = String(
+            req.query.status || "",
+          ).toLowerCase();
+
+          const search = String(
+            req.query.search || "",
+          ).trim();
+
+          const query: Record<
+            string,
+            unknown
+          > = {};
+
+          if (
+            [
+              "pending",
+              "approved",
+              "rejected",
+            ].includes(status)
+          ) {
+            query.status = status;
+          }
+
+          if (search) {
+            const safeSearch = search.replace(
+              /[.*+?^${}()|[\]\\]/g,
+              "\\$&",
+            );
+
+            const searchRegex = new RegExp(
+              safeSearch,
+              "i",
+            );
+
+            query.$or = [
+              {
+                name: searchRegex,
+              },
+              {
+                cuisine: searchRegex,
+              },
+              {
+                location: searchRegex,
+              },
+              {
+                ownerEmail: searchRegex,
+              },
+            ];
+          }
+
+          const restaurants =
+            await restaurantCollection
+              .find(query)
+              .sort({
+                createdAt: -1,
+              })
+              .toArray();
+
+          res.json(restaurants);
+        } catch (error) {
+          console.error(
+            "Admin restaurants fetch error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to fetch restaurants.",
+          });
+        }
+      },
+    );
+
+    // Admin approves or rejects a restaurant
+    app.patch(
+      "/api/admin/restaurants/:id/status",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const restaurantId = getObjectId(
+            req.params.id,
+          );
+
+          if (!restaurantId) {
+            return res.status(400).json({
+              message:
+                "Invalid restaurant ID.",
+            });
+          }
+
+          const status = String(
+            req.body?.status || "",
+          ).toLowerCase();
+
+          const allowedStatuses = [
+            "pending",
+            "approved",
+            "rejected",
+          ];
+
+          if (
+            !allowedStatuses.includes(status)
+          ) {
+            return res.status(400).json({
+              message:
+                "Invalid restaurant status.",
+              allowedStatuses,
+            });
+          }
+
+          const admin = getAuthUser(req);
+          const now = new Date();
+
+          const updateData: Record<
+            string,
+            unknown
+          > = {
+            status,
+            updatedAt: now,
+            moderatedAt: now,
+            moderatedBy: String(
+              admin?._id || "",
+            ),
+            moderatedByEmail: String(
+              admin?.email || "",
+            ),
+          };
+
+          if (status === "approved") {
+            updateData.approvedAt = now;
+            updateData.approvedBy = String(
+              admin?._id || "",
+            );
+            updateData.rejectedAt = null;
+            updateData.rejectedBy = null;
+          }
+
+          if (status === "rejected") {
+            updateData.rejectedAt = now;
+            updateData.rejectedBy = String(
+              admin?._id || "",
+            );
+            updateData.approvedAt = null;
+            updateData.approvedBy = null;
+          }
+
+          if (status === "pending") {
+            updateData.approvedAt = null;
+            updateData.approvedBy = null;
+            updateData.rejectedAt = null;
+            updateData.rejectedBy = null;
+          }
+
+          const result =
+            await restaurantCollection.updateOne(
+              {
+                _id: restaurantId,
+              },
+              {
+                $set: updateData,
+              },
+            );
+
+          if (!result.matchedCount) {
+            return res.status(404).json({
+              message:
+                "Restaurant was not found.",
+            });
+          }
+
+          const updatedRestaurant =
+            await restaurantCollection.findOne({
+              _id: restaurantId,
+            });
+
+          res.json({
+            success: true,
+            message: `Restaurant status changed to ${status}.`,
+            restaurant: updatedRestaurant,
+          });
+        } catch (error) {
+          console.error(
+            "Restaurant status update error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to update restaurant status.",
+          });
+        }
+      },
+    );
+
+    // Admin deletes any restaurant
+    app.delete(
+      "/api/admin/restaurants/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const restaurantId = getObjectId(
+            req.params.id,
+          );
+
+          if (!restaurantId) {
+            return res.status(400).json({
+              message:
+                "Invalid restaurant ID.",
+            });
+          }
+
+          const result =
+            await restaurantCollection.deleteOne({
+              _id: restaurantId,
+            });
+
+          if (!result.deletedCount) {
+            return res.status(404).json({
+              message:
+                "Restaurant was not found.",
+            });
+          }
+
+          res.json({
+            success: true,
+            message:
+              "Restaurant deleted successfully.",
+          });
+        } catch (error) {
+          console.error(
+            "Admin restaurant delete error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to delete restaurant.",
+          });
+        }
+      },
+    );
+
     // await client
     //   .db("admin")
     //   .command({ ping: 1 });
@@ -795,7 +976,6 @@ async function run() {
 
     void reservationCollection;
     void reviewCollection;
-    void verifyAdmin;
     void verifyCustomer;
   } finally {
     // await client.close();
