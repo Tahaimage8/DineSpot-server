@@ -6,6 +6,7 @@ import express, {
   type Response,
 } from "express";
 import {
+  type Filter,
   MongoClient,
   ObjectId,
   ServerApiVersion,
@@ -44,8 +45,8 @@ type AuthenticatedRequest = Request & {
     _id?: unknown;
     name?: string;
     email?: string;
-    role?: string;
-    accountType?: string;
+    role?: string | null;
+    accountType?: string | null;
     [key: string]: unknown;
   };
   session?: {
@@ -60,8 +61,8 @@ type UserDocument = {
   _id: string | ObjectId;
   name?: string;
   email?: string;
-  role?: string;
-  accountType?: string;
+  role?: string | null;
+  accountType?: string | null;
   [key: string]: unknown;
 };
 
@@ -986,6 +987,472 @@ async function run() {
       },
     );
 
+
+
+    // =====================================================
+    // ADMIN USER API
+    // =====================================================
+
+    const getUserIdFilter = (
+      value: string,
+    ): Filter<UserDocument> => {
+      const possibleIds: Array<
+        string | ObjectId
+      > = [value];
+
+      if (ObjectId.isValid(value)) {
+        possibleIds.push(
+          new ObjectId(value),
+        );
+      }
+
+      return {
+        $or: possibleIds.map((_id) => ({
+          _id,
+        })),
+      };
+    };
+
+    const getSafeAdminUser = (
+      user: UserDocument,
+      currentAdminId: unknown,
+    ) => {
+      const accountType =
+        normalizeAccountType(
+          user.accountType,
+        );
+
+      return {
+        _id: String(user._id),
+        name: String(user.name || ""),
+        email: String(user.email || ""),
+        image: String(user.image || ""),
+        emailVerified: Boolean(
+          user.emailVerified,
+        ),
+        role:
+          user.role === "admin"
+            ? "admin"
+            : "user",
+        accountType:
+          accountType ===
+          "restaurant_owner"
+            ? "restaurant_owner"
+            : "customer",
+        createdAt:
+          user.createdAt || null,
+        updatedAt:
+          user.updatedAt || null,
+        isCurrentUser:
+          String(user._id) ===
+          String(currentAdminId || ""),
+      };
+    };
+
+    // Admin gets all registered users
+    app.get(
+      "/api/admin/users",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const search = String(
+            req.query.search || "",
+          ).trim();
+
+          const role = String(
+            req.query.role || "",
+          ).toLowerCase();
+
+          const accountType =
+            normalizeAccountType(
+              req.query.accountType,
+            );
+
+          const filters: Array<
+            Filter<UserDocument>
+          > = [];
+
+          if (search) {
+            const safeSearch =
+              search.replace(
+                /[.*+?^${}()|[\]\\]/g,
+                "\\$&",
+              );
+
+            const searchRegex =
+              new RegExp(safeSearch, "i");
+
+            filters.push({
+              $or: [
+                {
+                  name: searchRegex,
+                },
+                {
+                  email: searchRegex,
+                },
+              ],
+            });
+          }
+
+          if (role === "admin") {
+            filters.push({
+              role: "admin",
+            });
+          }
+
+          if (role === "user") {
+            filters.push({
+              $or: [
+                {
+                  role: "user",
+                },
+                {
+                  role: {
+                    $exists: false,
+                  },
+                },
+                {
+                  role: null,
+                },
+              ],
+            });
+          }
+
+          if (
+            accountType ===
+            "restaurant_owner"
+          ) {
+            filters.push({
+              accountType:
+                "restaurant_owner",
+            });
+          }
+
+          if (
+            accountType === "customer"
+          ) {
+            filters.push({
+              $or: [
+                {
+                  accountType:
+                    "customer",
+                },
+                {
+                  accountType: {
+                    $exists: false,
+                  },
+                },
+                {
+                  accountType: null,
+                },
+              ],
+            });
+          }
+
+          const query: Filter<UserDocument> =
+            filters.length > 0
+              ? {
+                  $and: filters,
+                }
+              : {};
+
+          const users =
+            await userCollection
+              .find(query, {
+                projection: {
+                  name: 1,
+                  email: 1,
+                  image: 1,
+                  emailVerified: 1,
+                  role: 1,
+                  accountType: 1,
+                  createdAt: 1,
+                  updatedAt: 1,
+                },
+              })
+              .sort({
+                createdAt: -1,
+              })
+              .toArray();
+
+          const admin = getAuthUser(req);
+
+          res.json(
+            users.map((user) =>
+              getSafeAdminUser(
+                user,
+                admin?._id,
+              ),
+            ),
+          );
+        } catch (error) {
+          console.error(
+            "Admin users fetch error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to fetch users.",
+          });
+        }
+      },
+    );
+
+    // Admin changes a user's application role
+    app.patch(
+      "/api/admin/users/:id/role",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const userId = String(
+            req.params.id || "",
+          ).trim();
+
+          if (!userId) {
+            return res.status(400).json({
+              message:
+                "A valid user ID is required.",
+            });
+          }
+
+          const requestedRole = String(
+            req.body?.role || "",
+          ).toLowerCase();
+
+          if (
+            !["user", "admin"].includes(
+              requestedRole,
+            )
+          ) {
+            return res.status(400).json({
+              message:
+                "Role must be user or admin.",
+            });
+          }
+
+          const targetUser =
+            await userCollection.findOne(
+              getUserIdFilter(userId),
+            );
+
+          if (!targetUser) {
+            return res.status(404).json({
+              message:
+                "User was not found.",
+            });
+          }
+
+          const admin = getAuthUser(req);
+
+          if (
+            String(targetUser._id) ===
+            String(admin?._id || "")
+          ) {
+            return res.status(409).json({
+              message:
+                "You cannot change your own admin role.",
+            });
+          }
+
+          await userCollection.updateOne(
+            {
+              _id: targetUser._id,
+            },
+            {
+              $set: {
+                role: requestedRole,
+                updatedAt: new Date(),
+              },
+            },
+          );
+
+          const updatedUser =
+            await userCollection.findOne({
+              _id: targetUser._id,
+            });
+
+          if (!updatedUser) {
+            return res.status(404).json({
+              message:
+                "Updated user was not found.",
+            });
+          }
+
+          res.json({
+            success: true,
+            message: `User role changed to ${requestedRole}.`,
+            user: getSafeAdminUser(
+              updatedUser,
+              admin?._id,
+            ),
+          });
+        } catch (error) {
+          console.error(
+            "Admin user role update error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to update user role.",
+          });
+        }
+      },
+    );
+
+    // Admin changes a normal user's account type
+    app.patch(
+      "/api/admin/users/:id/account-type",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const userId = String(
+            req.params.id || "",
+          ).trim();
+
+          if (!userId) {
+            return res.status(400).json({
+              message:
+                "A valid user ID is required.",
+            });
+          }
+
+          const requestedAccountType =
+            normalizeAccountType(
+              req.body?.accountType,
+            );
+
+          if (
+            ![
+              "customer",
+              "restaurant_owner",
+            ].includes(
+              requestedAccountType,
+            )
+          ) {
+            return res.status(400).json({
+              message:
+                "Account type must be customer or restaurant_owner.",
+            });
+          }
+
+          const targetUser =
+            await userCollection.findOne(
+              getUserIdFilter(userId),
+            );
+
+          if (!targetUser) {
+            return res.status(404).json({
+              message:
+                "User was not found.",
+            });
+          }
+
+          if (targetUser.role === "admin") {
+            return res.status(409).json({
+              message:
+                "Admin account type cannot be changed.",
+            });
+          }
+
+          const currentAccountType =
+            normalizeAccountType(
+              targetUser.accountType,
+            );
+
+          if (
+            currentAccountType ===
+              "restaurant_owner" &&
+            requestedAccountType ===
+              "customer"
+          ) {
+            const ownerFilters: Array<
+              Record<string, string>
+            > = [
+              {
+                ownerId: String(
+                  targetUser._id,
+                ),
+              },
+            ];
+
+            if (targetUser.email) {
+              ownerFilters.push({
+                ownerEmail: String(
+                  targetUser.email,
+                ),
+              });
+            }
+
+            const ownedRestaurant =
+              await restaurantCollection.findOne({
+                $or: ownerFilters,
+              });
+
+            if (ownedRestaurant) {
+              return res.status(409).json({
+                message:
+                  "This owner still has a restaurant. Delete the restaurant before changing the account to customer.",
+              });
+            }
+          }
+
+          await userCollection.updateOne(
+            {
+              _id: targetUser._id,
+            },
+            {
+              $set: {
+                accountType:
+                  requestedAccountType,
+                updatedAt: new Date(),
+              },
+            },
+          );
+
+          const updatedUser =
+            await userCollection.findOne({
+              _id: targetUser._id,
+            });
+
+          if (!updatedUser) {
+            return res.status(404).json({
+              message:
+                "Updated user was not found.",
+            });
+          }
+
+          const admin = getAuthUser(req);
+
+          res.json({
+            success: true,
+            message:
+              requestedAccountType ===
+              "restaurant_owner"
+                ? "Account changed to restaurant owner."
+                : "Account changed to customer.",
+            user: getSafeAdminUser(
+              updatedUser,
+              admin?._id,
+            ),
+          });
+        } catch (error) {
+          console.error(
+            "Admin account type update error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to update account type.",
+          });
+        }
+      },
+    );
 
     // =====================================================
     // RESERVATION API
