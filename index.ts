@@ -38,6 +38,17 @@ const client = new MongoClient(uri, {
   },
 });
 
+type AuthenticatedRequest = Request & {
+  user?: {
+    role?: string;
+    accountType?: string;
+    [key: string]: unknown;
+  };
+  session?: {
+    [key: string]: unknown;
+  };
+};
+
 async function run() {
   try {
     // await client.connect();
@@ -61,9 +72,7 @@ async function run() {
 
     // Verification related
 
-    const findUserById = async (
-      userId: unknown,
-    ) => {
+    const findUserById = async ( userId: unknown,) => {
       if (!userId) {
         return null;
       }
@@ -80,7 +89,11 @@ async function run() {
       });
     };
 
-    const verifyToken = async (req: Request,res: Response,next: NextFunction,) => {
+    const verifyToken = async (
+      req: Request,
+      res: Response,
+      next: NextFunction,
+    ) => {
       try {
         const authHeader =
           req.headers.authorization || "";
@@ -128,7 +141,7 @@ async function run() {
           });
         }
 
-        const authenticatedRequest = req as Request & {user?: typeof user;session?: typeof session;};
+        const authenticatedRequest =req as AuthenticatedRequest;
 
         authenticatedRequest.user = user;
         authenticatedRequest.session = session;
@@ -146,6 +159,62 @@ async function run() {
       }
     };
 
+    const verifyAdmin = (
+      req: Request,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      const authenticatedRequest =req as AuthenticatedRequest;
+
+      if (authenticatedRequest.user?.role !=="admin") {
+        return res.status(403).json({
+          message: "Admin access required.",
+        });
+      }
+
+      next();
+    };
+
+    const verifyCustomer = (req: Request,res: Response, next: NextFunction,) => {
+      const authenticatedRequest =
+        req as AuthenticatedRequest;
+
+      const user =authenticatedRequest.user;
+
+      if (
+        user?.role !== "user" ||
+        user?.accountType ===
+          "restaurant_owner"
+      ) {
+        return res.status(403).json({
+          message: "Customer access required.",
+        });
+      }
+
+      next();
+    };
+
+    const verifyRestaurantOwner = (req: Request,res: Response,next: NextFunction,) => {
+      const authenticatedRequest =
+        req as AuthenticatedRequest;
+
+      const user =
+        authenticatedRequest.user;
+
+      if (
+        user?.role !== "user" ||
+        user?.accountType !==
+          "restaurant_owner"
+      ) {
+        return res.status(403).json({
+          message:
+            "Restaurant owner access required.",
+        });
+      }
+
+      next();
+    };
+
     // Restaurant, reservation, review and user API routes
 
     // await client
@@ -159,7 +228,11 @@ async function run() {
     void restaurantCollection;
     void reservationCollection;
     void reviewCollection;
+
     void verifyToken;
+    void verifyAdmin;
+    void verifyCustomer;
+    void verifyRestaurantOwner;
   } finally {
     // await client.close();
   }
