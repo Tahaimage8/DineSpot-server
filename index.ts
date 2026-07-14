@@ -9,7 +9,7 @@ import {
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = Number(process.env.PORT) || 5000;
 
 app.use(cors());
 app.use(express.json());
@@ -50,22 +50,20 @@ async function run() {
       database.collection("reviews");
 
     const userCollection =
-      database.collection("users");
+      database.collection("user");
 
     const sessionCollection =
-      database.collection("sessions");
+      database.collection("session");
 
-    // Restaurant, reservation, review এবং user API routes
-
+    // Restaurant, reservation, review and user API routes
 
     // await client
     //   .db("admin")
     //   .command({ ping: 1 });
 
     console.log(
-      "DineSpot database is ready!",
+      "DineSpot database setup is ready!",
     );
-
 
     void restaurantCollection;
     void reservationCollection;
@@ -73,7 +71,6 @@ async function run() {
     void userCollection;
     void sessionCollection;
   } finally {
-  
     // await client.close();
   }
 }
