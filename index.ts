@@ -1,9 +1,6 @@
 import cors from "cors";
 import dotenv from "dotenv";
-import express, {
-  type Request,
-  type Response,
-} from "express";
+import express from "express";
 import {
   MongoClient,
   ServerApiVersion,
@@ -12,17 +9,24 @@ import {
 dotenv.config();
 
 const app = express();
-const port = Number(process.env.PORT) || 5000;
+const port = process.env.PORT || 5000;
 
-const mongoUri = process.env.MONGODB_URI;
+app.use(cors());
+app.use(express.json());
 
-if (!mongoUri) {
+app.get("/", (_req, res) => {
+  res.send("DineSpot server is running!");
+});
+
+const uri = process.env.MONGODB_URI;
+
+if (!uri) {
   throw new Error(
     "MONGODB_URI is missing in the .env file.",
   );
 }
 
-const client = new MongoClient(mongoUri, {
+const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
     strict: true,
@@ -30,47 +34,54 @@ const client = new MongoClient(mongoUri, {
   },
 });
 
-app.use(
-  cors({
-    origin:
-      process.env.CLIENT_URL ||
-      "http://localhost:3000",
-    credentials: true,
-  }),
-);
-
-app.use(express.json());
-
-app.get(
-  "/",
-  (_req: Request, res: Response) => {
-    res.send("DineSpot server is running.");
-  },
-);
-
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
 
-    await client
-      .db("admin")
-      .command({ ping: 1 });
+    const database = client.db("dinespot");
+
+    const restaurantCollection =
+      database.collection("restaurants");
+
+    const reservationCollection =
+      database.collection("reservations");
+
+    const reviewCollection =
+      database.collection("reviews");
+
+    const userCollection =
+      database.collection("users");
+
+    const sessionCollection =
+      database.collection("sessions");
+
+    // Restaurant, reservation, review এবং user API routes
+
+
+    // await client
+    //   .db("admin")
+    //   .command({ ping: 1 });
 
     console.log(
-      "MongoDB connected successfully!",
+      "DineSpot database is ready!",
     );
 
-    app.listen(port, () => {
-      console.log(
-        `DineSpot server is running on port ${port}`,
-      );
-    });
-  } catch (error) {
-    console.error(
-      "MongoDB connection failed:",
-      error,
-    );
+
+    void restaurantCollection;
+    void reservationCollection;
+    void reviewCollection;
+    void userCollection;
+    void sessionCollection;
+  } finally {
+  
+    // await client.close();
   }
 }
 
-run();
+run().catch(console.dir);
+
+app.listen(port, () => {
+  console.log(
+    `DineSpot server running on port ${port}`,
+  );
+});
