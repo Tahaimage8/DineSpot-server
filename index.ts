@@ -1,6 +1,10 @@
 import cors from "cors";
 import dotenv from "dotenv";
-import express from "express";
+import express, {
+  type NextFunction,
+  type Request,
+  type Response,
+} from "express";
 import {
   MongoClient,
   ServerApiVersion,
@@ -55,6 +59,93 @@ async function run() {
     const sessionCollection =
       database.collection("session");
 
+    // Verification related
+
+    const findUserById = async (
+      userId: unknown,
+    ) => {
+      if (!userId) {
+        return null;
+      }
+
+      return userCollection.findOne({
+        $expr: {
+          $eq: [
+            {
+              $toString: "$_id",
+            },
+            String(userId),
+          ],
+        },
+      });
+    };
+
+    const verifyToken = async (req: Request,res: Response,next: NextFunction,) => {
+      try {
+        const authHeader =
+          req.headers.authorization || "";
+
+        const [scheme, token] =
+          authHeader.split(" ");
+
+        if (scheme !== "Bearer" || !token) {
+          return res.status(401).json({
+            message: "Unauthorized access.",
+          });
+        }
+
+        const session =
+          await sessionCollection.findOne({
+            token,
+          });
+
+        if (!session) {
+          return res.status(401).json({
+            message:
+              "Invalid or expired session.",
+          });
+        }
+
+        if (
+          session.expiresAt &&
+          new Date(
+            session.expiresAt,
+          ).getTime() < Date.now()
+        ) {
+          return res.status(401).json({
+            message: "Session expired.",
+          });
+        }
+
+        const user = await findUserById(
+          session.userId,
+        );
+
+        if (!user) {
+          return res.status(401).json({
+            message:
+              "Session user was not found.",
+          });
+        }
+
+        const authenticatedRequest = req as Request & {user?: typeof user;session?: typeof session;};
+
+        authenticatedRequest.user = user;
+        authenticatedRequest.session = session;
+
+        next();
+      } catch (error) {
+        console.error(
+          "Token verification error:",
+          error,
+        );
+
+        res.status(500).json({
+          message: "Failed to verify user.",
+        });
+      }
+    };
+
     // Restaurant, reservation, review and user API routes
 
     // await client
@@ -68,8 +159,7 @@ async function run() {
     void restaurantCollection;
     void reservationCollection;
     void reviewCollection;
-    void userCollection;
-    void sessionCollection;
+    void verifyToken;
   } finally {
     // await client.close();
   }
