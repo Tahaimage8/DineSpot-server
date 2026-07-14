@@ -81,10 +81,10 @@ async function run() {
       database.collection("reviews");
 
     const userCollection =
-      database.collection<UserDocument>("user");
+      database.collection<UserDocument>("users");
 
     const sessionCollection =
-      database.collection("session");
+      database.collection("sessions");
 
     // =====================================================
     // HELPER FUNCTIONS
