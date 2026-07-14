@@ -223,6 +223,15 @@ async function run() {
       }
     };
 
+    const normalizeAccountType = (
+      value: unknown,
+    ) => {
+      return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[\s-]+/g, "_");
+    };
+
     const verifyAdmin = (
       req: Request,
       res: Response,
@@ -245,11 +254,13 @@ async function run() {
       next: NextFunction,
     ) => {
       const user = getAuthUser(req);
+      const accountType = normalizeAccountType(
+        user?.accountType,
+      );
 
       if (
-        user?.role !== "user" ||
-        user?.accountType ===
-          "restaurant_owner"
+        user?.role === "admin" ||
+        accountType === "restaurant_owner"
       ) {
         return res.status(403).json({
           message: "Customer access required.",
@@ -265,11 +276,13 @@ async function run() {
       next: NextFunction,
     ) => {
       const user = getAuthUser(req);
+      const accountType = normalizeAccountType(
+        user?.accountType,
+      );
 
       if (
-        user?.role !== "user" ||
-        user?.accountType !==
-          "restaurant_owner"
+        user?.role === "admin" ||
+        accountType !== "restaurant_owner"
       ) {
         return res.status(403).json({
           message:
