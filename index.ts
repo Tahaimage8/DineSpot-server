@@ -65,6 +65,13 @@ type UserDocument = {
   [key: string]: unknown;
 };
 
+type ReservationStatus =
+  | "pending"
+  | "confirmed"
+  | "rejected"
+  | "cancelled"
+  | "completed";
+
 async function run() {
   try {
     // await client.connect();
@@ -979,6 +986,854 @@ async function run() {
       },
     );
 
+
+    // =====================================================
+    // RESERVATION API
+    // =====================================================
+
+    const reservationStatuses: ReservationStatus[] = [
+      "pending",
+      "confirmed",
+      "rejected",
+      "cancelled",
+      "completed",
+    ];
+
+    const ownerReservationStatuses: ReservationStatus[] = [
+      "confirmed",
+      "rejected",
+      "completed",
+    ];
+
+    const getCustomerReservationFilter = (
+      user: AuthenticatedRequest["user"],
+    ) => ({
+      $or: [
+        {
+          customerId: String(user?._id || ""),
+        },
+        {
+          customerEmail: String(user?.email || ""),
+        },
+      ],
+    });
+
+    const getReservationDateTime = (
+      reservationDate: string,
+      reservationTime: string,
+    ) => {
+      const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+      const timePattern =
+        /^([01]\d|2[0-3]):[0-5]\d$/;
+
+      if (
+        !datePattern.test(reservationDate) ||
+        !timePattern.test(reservationTime)
+      ) {
+        return null;
+      }
+
+      const dateTime = new Date(
+        `${reservationDate}T${reservationTime}:00`,
+      );
+
+      if (Number.isNaN(dateTime.getTime())) {
+        return null;
+      }
+
+      return dateTime;
+    };
+
+    // Customer creates a reservation
+    app.post(
+      "/api/reservations",
+      verifyToken,
+      verifyCustomer,
+      async (req, res) => {
+        try {
+          const user = getAuthUser(req);
+          const reservationData =
+            req.body || {};
+
+          const restaurantId = getObjectId(
+            String(
+              reservationData.restaurantId ||
+                "",
+            ),
+          );
+
+          if (!restaurantId) {
+            return res.status(400).json({
+              message:
+                "A valid restaurant ID is required.",
+            });
+          }
+
+          const restaurant =
+            await restaurantCollection.findOne({
+              _id: restaurantId,
+              status: "approved",
+            });
+
+          if (!restaurant) {
+            return res.status(404).json({
+              message:
+                "Approved restaurant was not found.",
+            });
+          }
+
+          const reservationDate = String(
+            reservationData.reservationDate ||
+              reservationData.date ||
+              "",
+          ).trim();
+
+          const reservationTime = String(
+            reservationData.reservationTime ||
+              reservationData.time ||
+              "",
+          ).trim();
+
+          const reservationDateTime =
+            getReservationDateTime(
+              reservationDate,
+              reservationTime,
+            );
+
+          if (
+            !reservationDateTime ||
+            reservationDateTime.getTime() <=
+              Date.now()
+          ) {
+            return res.status(400).json({
+              message:
+                "Reservation date and time must be in the future.",
+            });
+          }
+
+          const guestCount = Number(
+            reservationData.guestCount ??
+              reservationData.guests,
+          );
+
+          if (
+            !Number.isInteger(guestCount) ||
+            guestCount < 1 ||
+            guestCount > 20
+          ) {
+            return res.status(400).json({
+              message:
+                "Guest count must be between 1 and 20.",
+            });
+          }
+
+          const phone = String(
+            reservationData.phone || "",
+          ).trim();
+
+          if (!phone) {
+            return res.status(400).json({
+              message:
+                "A contact phone number is required.",
+            });
+          }
+
+          const customerId = String(
+            user?._id || "",
+          );
+
+          const customerEmail = String(
+            user?.email || "",
+          );
+
+          const duplicateReservation =
+            await reservationCollection.findOne({
+              restaurantId:
+                restaurant._id.toString(),
+              reservationDate,
+              reservationTime,
+              status: {
+                $in: [
+                  "pending",
+                  "confirmed",
+                ],
+              },
+              $or: [
+                {
+                  customerId,
+                },
+                {
+                  customerEmail,
+                },
+              ],
+            });
+
+          if (duplicateReservation) {
+            return res.status(409).json({
+              message:
+                "You already have an active reservation for this restaurant at the selected date and time.",
+            });
+          }
+
+          const now = new Date();
+
+          const newReservation = {
+            restaurantId:
+              restaurant._id.toString(),
+            restaurantName: String(
+              restaurant.name || "",
+            ),
+            restaurantImage: String(
+              restaurant.image || "",
+            ),
+            restaurantLocation: String(
+              restaurant.location || "",
+            ),
+            restaurantOwnerId: String(
+              restaurant.ownerId || "",
+            ),
+            restaurantOwnerEmail: String(
+              restaurant.ownerEmail || "",
+            ),
+
+            customerId,
+            customerName: String(
+              user?.name || "",
+            ),
+            customerEmail,
+
+            phone,
+            reservationDate,
+            reservationTime,
+            guestCount,
+            specialRequest: String(
+              reservationData.specialRequest ||
+                "",
+            ).trim(),
+
+            status: "pending",
+            statusHistory: [
+              {
+                status: "pending",
+                changedAt: now,
+                changedBy: customerId,
+                changedByEmail:
+                  customerEmail,
+                changedByRole: "customer",
+              },
+            ],
+
+            createdAt: now,
+            updatedAt: now,
+          };
+
+          const result =
+            await reservationCollection.insertOne(
+              newReservation,
+            );
+
+          res.status(201).json({
+            success: true,
+            message:
+              "Reservation submitted successfully.",
+            insertedId: result.insertedId,
+            reservation: {
+              ...newReservation,
+              _id: result.insertedId,
+            },
+          });
+        } catch (error) {
+          console.error(
+            "Reservation create error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to create reservation.",
+          });
+        }
+      },
+    );
+
+    // Customer gets their own reservations
+    app.get(
+      "/api/my/reservations",
+      verifyToken,
+      verifyCustomer,
+      async (req, res) => {
+        try {
+          const user = getAuthUser(req);
+          const status = String(
+            req.query.status || "",
+          ).toLowerCase();
+
+          const query: Record<
+            string,
+            unknown
+          > = {
+            ...getCustomerReservationFilter(
+              user,
+            ),
+          };
+
+          if (
+            reservationStatuses.includes(
+              status as ReservationStatus,
+            )
+          ) {
+            query.status = status;
+          }
+
+          const reservations =
+            await reservationCollection
+              .find(query)
+              .sort({
+                reservationDate: -1,
+                reservationTime: -1,
+                createdAt: -1,
+              })
+              .toArray();
+
+          res.json(reservations);
+        } catch (error) {
+          console.error(
+            "Customer reservations fetch error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to fetch your reservations.",
+          });
+        }
+      },
+    );
+
+    // Customer cancels their own active reservation
+    app.patch(
+      "/api/reservations/:id/cancel",
+      verifyToken,
+      verifyCustomer,
+      async (req, res) => {
+        try {
+          const reservationId = getObjectId(
+            req.params.id,
+          );
+
+          if (!reservationId) {
+            return res.status(400).json({
+              message:
+                "Invalid reservation ID.",
+            });
+          }
+
+          const user = getAuthUser(req);
+
+          const reservation =
+            await reservationCollection.findOne({
+              _id: reservationId,
+              ...getCustomerReservationFilter(
+                user,
+              ),
+            });
+
+          if (!reservation) {
+            return res.status(404).json({
+              message:
+                "Reservation was not found.",
+            });
+          }
+
+          if (
+            ![
+              "pending",
+              "confirmed",
+            ].includes(
+              String(
+                reservation.status || "",
+              ),
+            )
+          ) {
+            return res.status(409).json({
+              message:
+                "This reservation can no longer be cancelled.",
+            });
+          }
+
+          const now = new Date();
+
+          const statusHistory =
+            Array.isArray(
+              reservation.statusHistory,
+            )
+              ? reservation.statusHistory
+              : [];
+
+          await reservationCollection.updateOne(
+            {
+              _id: reservationId,
+            },
+            {
+              $set: {
+                status: "cancelled",
+                cancelledAt: now,
+                cancelledBy: String(
+                  user?._id || "",
+                ),
+                updatedAt: now,
+                statusHistory: [
+                  ...statusHistory,
+                  {
+                    status: "cancelled",
+                    changedAt: now,
+                    changedBy: String(
+                      user?._id || "",
+                    ),
+                    changedByEmail: String(
+                      user?.email || "",
+                    ),
+                    changedByRole:
+                      "customer",
+                  },
+                ],
+              },
+            },
+          );
+
+          const updatedReservation =
+            await reservationCollection.findOne({
+              _id: reservationId,
+            });
+
+          res.json({
+            success: true,
+            message:
+              "Reservation cancelled successfully.",
+            reservation:
+              updatedReservation,
+          });
+        } catch (error) {
+          console.error(
+            "Reservation cancel error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to cancel reservation.",
+          });
+        }
+      },
+    );
+
+    // Restaurant owner gets reservations for their restaurant
+    app.get(
+      "/api/owner/reservations",
+      verifyToken,
+      verifyRestaurantOwner,
+      async (req, res) => {
+        try {
+          const user = getAuthUser(req);
+
+          const restaurant =
+            await restaurantCollection.findOne(
+              getOwnerFilter(user),
+            );
+
+          if (!restaurant) {
+            return res.json([]);
+          }
+
+          const status = String(
+            req.query.status || "",
+          ).toLowerCase();
+
+          const search = String(
+            req.query.search || "",
+          ).trim();
+
+          const query: Record<
+            string,
+            unknown
+          > = {
+            restaurantId:
+              restaurant._id.toString(),
+          };
+
+          if (
+            reservationStatuses.includes(
+              status as ReservationStatus,
+            )
+          ) {
+            query.status = status;
+          }
+
+          if (search) {
+            const safeSearch =
+              search.replace(
+                /[.*+?^${}()|[\]\\]/g,
+                "\\$&",
+              );
+
+            const searchRegex =
+              new RegExp(safeSearch, "i");
+
+            query.$or = [
+              {
+                customerName:
+                  searchRegex,
+              },
+              {
+                customerEmail:
+                  searchRegex,
+              },
+              {
+                phone: searchRegex,
+              },
+            ];
+          }
+
+          const reservations =
+            await reservationCollection
+              .find(query)
+              .sort({
+                reservationDate: 1,
+                reservationTime: 1,
+                createdAt: -1,
+              })
+              .toArray();
+
+          res.json(reservations);
+        } catch (error) {
+          console.error(
+            "Owner reservations fetch error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to fetch restaurant reservations.",
+          });
+        }
+      },
+    );
+
+    // Restaurant owner updates reservation status
+    app.patch(
+      "/api/owner/reservations/:id/status",
+      verifyToken,
+      verifyRestaurantOwner,
+      async (req, res) => {
+        try {
+          const reservationId = getObjectId(
+            req.params.id,
+          );
+
+          if (!reservationId) {
+            return res.status(400).json({
+              message:
+                "Invalid reservation ID.",
+            });
+          }
+
+          const requestedStatus = String(
+            req.body?.status || "",
+          ).toLowerCase() as ReservationStatus;
+
+          if (
+            !ownerReservationStatuses.includes(
+              requestedStatus,
+            )
+          ) {
+            return res.status(400).json({
+              message:
+                "Invalid reservation status.",
+              allowedStatuses:
+                ownerReservationStatuses,
+            });
+          }
+
+          const user = getAuthUser(req);
+
+          const restaurant =
+            await restaurantCollection.findOne(
+              getOwnerFilter(user),
+            );
+
+          if (!restaurant) {
+            return res.status(404).json({
+              message:
+                "Restaurant was not found.",
+            });
+          }
+
+          const reservation =
+            await reservationCollection.findOne({
+              _id: reservationId,
+              restaurantId:
+                restaurant._id.toString(),
+            });
+
+          if (!reservation) {
+            return res.status(404).json({
+              message:
+                "Reservation was not found or you cannot manage it.",
+            });
+          }
+
+          const currentStatus = String(
+            reservation.status || "",
+          );
+
+          if (
+            [
+              "cancelled",
+              "rejected",
+              "completed",
+            ].includes(currentStatus)
+          ) {
+            return res.status(409).json({
+              message:
+                "A finalized reservation cannot be changed.",
+            });
+          }
+
+          if (
+            requestedStatus ===
+              "completed" &&
+            currentStatus !==
+              "confirmed"
+          ) {
+            return res.status(409).json({
+              message:
+                "Only a confirmed reservation can be marked as completed.",
+            });
+          }
+
+          const now = new Date();
+
+          const updateData: Record<
+            string,
+            unknown
+          > = {
+            status: requestedStatus,
+            updatedAt: now,
+          };
+
+          if (
+            requestedStatus ===
+            "confirmed"
+          ) {
+            updateData.confirmedAt = now;
+            updateData.confirmedBy =
+              String(user?._id || "");
+          }
+
+          if (
+            requestedStatus ===
+            "rejected"
+          ) {
+            updateData.rejectedAt = now;
+            updateData.rejectedBy =
+              String(user?._id || "");
+          }
+
+          if (
+            requestedStatus ===
+            "completed"
+          ) {
+            updateData.completedAt = now;
+            updateData.completedBy =
+              String(user?._id || "");
+          }
+
+          const statusHistory =
+            Array.isArray(
+              reservation.statusHistory,
+            )
+              ? reservation.statusHistory
+              : [];
+
+          updateData.statusHistory = [
+            ...statusHistory,
+            {
+              status: requestedStatus,
+              changedAt: now,
+              changedBy: String(
+                user?._id || "",
+              ),
+              changedByEmail: String(
+                user?.email || "",
+              ),
+              changedByRole:
+                "restaurant_owner",
+            },
+          ];
+
+          await reservationCollection.updateOne(
+            {
+              _id: reservationId,
+            },
+            {
+              $set: updateData,
+            },
+          );
+
+          const updatedReservation =
+            await reservationCollection.findOne({
+              _id: reservationId,
+            });
+
+          res.json({
+            success: true,
+            message: `Reservation status changed to ${requestedStatus}.`,
+            reservation:
+              updatedReservation,
+          });
+        } catch (error) {
+          console.error(
+            "Owner reservation update error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to update reservation status.",
+          });
+        }
+      },
+    );
+
+    // Admin gets all reservations
+    app.get(
+      "/api/admin/reservations",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const status = String(
+            req.query.status || "",
+          ).toLowerCase();
+
+          const search = String(
+            req.query.search || "",
+          ).trim();
+
+          const query: Record<
+            string,
+            unknown
+          > = {};
+
+          if (
+            reservationStatuses.includes(
+              status as ReservationStatus,
+            )
+          ) {
+            query.status = status;
+          }
+
+          if (search) {
+            const safeSearch =
+              search.replace(
+                /[.*+?^${}()|[\]\\]/g,
+                "\\$&",
+              );
+
+            const searchRegex =
+              new RegExp(safeSearch, "i");
+
+            query.$or = [
+              {
+                restaurantName:
+                  searchRegex,
+              },
+              {
+                customerName:
+                  searchRegex,
+              },
+              {
+                customerEmail:
+                  searchRegex,
+              },
+              {
+                phone: searchRegex,
+              },
+            ];
+          }
+
+          const reservations =
+            await reservationCollection
+              .find(query)
+              .sort({
+                createdAt: -1,
+              })
+              .toArray();
+
+          res.json(reservations);
+        } catch (error) {
+          console.error(
+            "Admin reservations fetch error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to fetch reservations.",
+          });
+        }
+      },
+    );
+
+    // Admin deletes any reservation
+    app.delete(
+      "/api/admin/reservations/:id",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const reservationId = getObjectId(
+            req.params.id,
+          );
+
+          if (!reservationId) {
+            return res.status(400).json({
+              message:
+                "Invalid reservation ID.",
+            });
+          }
+
+          const result =
+            await reservationCollection.deleteOne({
+              _id: reservationId,
+            });
+
+          if (!result.deletedCount) {
+            return res.status(404).json({
+              message:
+                "Reservation was not found.",
+            });
+          }
+
+          res.json({
+            success: true,
+            message:
+              "Reservation deleted successfully.",
+          });
+        } catch (error) {
+          console.error(
+            "Admin reservation delete error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to delete reservation.",
+          });
+        }
+      },
+    );
+
     // await client
     //   .db("admin")
     //   .command({ ping: 1 });
@@ -987,9 +1842,7 @@ async function run() {
       "DineSpot database setup is ready!",
     );
 
-    void reservationCollection;
     void reviewCollection;
-    void verifyCustomer;
   } finally {
     // await client.close();
   }
