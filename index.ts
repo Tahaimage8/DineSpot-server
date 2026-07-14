@@ -47,6 +47,7 @@ type AuthenticatedRequest = Request & {
     email?: string;
     role?: string | null;
     accountType?: string | null;
+    isBlocked?: boolean;
     [key: string]: unknown;
   };
   session?: {
@@ -63,6 +64,10 @@ type UserDocument = {
   email?: string;
   role?: string | null;
   accountType?: string | null;
+  isBlocked?: boolean;
+  blockedAt?: Date | null;
+  blockedBy?: string | null;
+  blockedByEmail?: string | null;
   [key: string]: unknown;
 };
 
@@ -208,6 +213,14 @@ async function run() {
           return res.status(401).json({
             message:
               "Session user was not found.",
+          });
+        }
+
+        if (user.isBlocked === true) {
+          return res.status(403).json({
+            code: "USER_BLOCKED",
+            message:
+              "Your account has been blocked by an administrator.",
           });
         }
 
@@ -1043,6 +1056,10 @@ async function run() {
           user.createdAt || null,
         updatedAt:
           user.updatedAt || null,
+        isBlocked:
+          user.isBlocked === true,
+        blockedAt:
+          user.blockedAt || null,
         isCurrentUser:
           String(user._id) ===
           String(currentAdminId || ""),
@@ -1169,6 +1186,8 @@ async function run() {
                   accountType: 1,
                   createdAt: 1,
                   updatedAt: 1,
+                  isBlocked: 1,
+                  blockedAt: 1,
                 },
               })
               .sort({
@@ -1449,6 +1468,124 @@ async function run() {
           res.status(500).json({
             message:
               "Failed to update account type.",
+          });
+        }
+      },
+    );
+
+
+    // Admin blocks or unblocks a user
+    app.patch(
+      "/api/admin/users/:id/block",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const userId = String(
+            req.params.id || "",
+          ).trim();
+
+          if (!userId) {
+            return res.status(400).json({
+              message:
+                "A valid user ID is required.",
+            });
+          }
+
+          if (
+            typeof req.body?.isBlocked !==
+            "boolean"
+          ) {
+            return res.status(400).json({
+              message:
+                "isBlocked must be true or false.",
+            });
+          }
+
+          const targetUser =
+            await userCollection.findOne(
+              getUserIdFilter(userId),
+            );
+
+          if (!targetUser) {
+            return res.status(404).json({
+              message:
+                "User was not found.",
+            });
+          }
+
+          const admin = getAuthUser(req);
+
+          if (
+            String(targetUser._id) ===
+            String(admin?._id || "")
+          ) {
+            return res.status(409).json({
+              message:
+                "You cannot block your own account.",
+            });
+          }
+
+          const isBlocked =
+            req.body.isBlocked;
+          const now = new Date();
+
+          await userCollection.updateOne(
+            {
+              _id: targetUser._id,
+            },
+            {
+              $set: {
+                isBlocked,
+                blockedAt: isBlocked
+                  ? now
+                  : null,
+                blockedBy: isBlocked
+                  ? String(
+                      admin?._id || "",
+                    )
+                  : null,
+                blockedByEmail: isBlocked
+                  ? String(
+                      admin?.email || "",
+                    )
+                  : null,
+                updatedAt: now,
+              },
+            },
+          );
+
+          const updatedUser =
+            await userCollection.findOne({
+              _id: targetUser._id,
+            });
+
+          if (!updatedUser) {
+            return res.status(404).json({
+              message:
+                "Updated user was not found.",
+            });
+          }
+
+          res.json({
+            success: true,
+            message: isBlocked
+              ? "User blocked successfully."
+              : "User unblocked successfully.",
+            user: getSafeAdminUser(
+              updatedUser,
+              admin?._id,
+            ),
+          });
+        } catch (error) {
+          console.error(
+            "Admin user block update error:",
+            error,
+          );
+
+          res.status(500).json({
+            message:
+              "Failed to update user access.",
           });
         }
       },
